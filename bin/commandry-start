@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# commandry-start — Launch Commandry (API + SPA on :10000)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+DATA_DIR="${COMMANDRY_DATA:-/data/commandry}"
+DB_PATH="${COMMANDRY_DB:-${DATA_DIR}/commandry.db}"
+API_PORT="${COMMANDRY_PORT:-10000}"
+
+mkdir -p "$DATA_DIR"
+
+echo "⌘  Commandry — Mission control for your AI agents"
+echo "   Data dir:  $DATA_DIR"
+echo "   Database:  $DB_PATH"
+echo "   API port:  $API_PORT"
+echo ""
+
+# ── Seed demo data if fresh DB ──
+if [ ! -f "$DB_PATH" ]; then
+  echo "🌱 First run — seeding demo data…"
+  cd "$SCRIPT_DIR/commandry-api"
+  COMMANDRY_DB="$DB_PATH" python3 seed_demo.py
+  echo ""
+fi
+
+# ── Start FastAPI (serves API + SPA) ──
+echo "🚀 Starting Commandry API on :${API_PORT}…"
+cd "$SCRIPT_DIR/commandry-api"
+COMMANDRY_DB="$DB_PATH" python3 -m uvicorn main:app \
+  --host 0.0.0.0 \
+  --port "$API_PORT" \
+  --log-level info &
+API_PID=$!
+
+echo ""
+echo "✅ Commandry is running at http://localhost:${API_PORT}"
+echo "   Press Ctrl+C to stop."
+
+# ── Wait for API process ──
+wait $API_PID
