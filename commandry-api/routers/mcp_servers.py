@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from database import get_db
 from models import MCPServer
@@ -53,84 +53,84 @@ def _mcp_dict(s: MCPServer) -> dict:
 
 
 @router.get("")
-async def list_mcp_servers(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(MCPServer).order_by(MCPServer.display_name))
+def list_mcp_servers(db: Session = Depends(get_db)):
+    result = db.execute(select(MCPServer).order_by(MCPServer.display_name))
     return [_mcp_dict(s) for s in result.scalars().all()]
 
 
 @router.post("", status_code=201)
-async def create_mcp_server(body: MCPServerCreate, db: AsyncSession = Depends(get_db)):
-    existing = await db.get(MCPServer, body.id)
+def create_mcp_server(body: MCPServerCreate, db: Session = Depends(get_db)):
+    existing = db.get(MCPServer, body.id)
     if existing:
         raise HTTPException(status_code=409, detail="MCP server already exists")
     server = MCPServer(**body.model_dump())
     db.add(server)
-    await db.commit()
-    await db.refresh(server)
+    db.commit()
+    db.refresh(server)
     return _mcp_dict(server)
 
 
 @router.get("/{server_id}")
-async def get_mcp_server(server_id: str, db: AsyncSession = Depends(get_db)):
-    server = await db.get(MCPServer, server_id)
+def get_mcp_server(server_id: str, db: Session = Depends(get_db)):
+    server = db.get(MCPServer, server_id)
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
     return _mcp_dict(server)
 
 
 @router.put("/{server_id}")
-async def update_mcp_server(server_id: str, body: MCPServerUpdate, db: AsyncSession = Depends(get_db)):
-    server = await db.get(MCPServer, server_id)
+def update_mcp_server(server_id: str, body: MCPServerUpdate, db: Session = Depends(get_db)):
+    server = db.get(MCPServer, server_id)
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(server, k, v)
     server.updated_at = datetime.utcnow()
-    await db.commit()
-    await db.refresh(server)
+    db.commit()
+    db.refresh(server)
     return _mcp_dict(server)
 
 
 @router.delete("/{server_id}")
-async def delete_mcp_server(server_id: str, db: AsyncSession = Depends(get_db)):
-    server = await db.get(MCPServer, server_id)
+def delete_mcp_server(server_id: str, db: Session = Depends(get_db)):
+    server = db.get(MCPServer, server_id)
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
-    await db.delete(server)
-    await db.commit()
+    db.delete(server)
+    db.commit()
     return {"ok": True}
 
 
 @router.post("/{server_id}/start")
-async def start_mcp_server(server_id: str, db: AsyncSession = Depends(get_db)):
-    server = await db.get(MCPServer, server_id)
+def start_mcp_server(server_id: str, db: Session = Depends(get_db)):
+    server = db.get(MCPServer, server_id)
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
     server.status = "running"
     server.updated_at = datetime.utcnow()
-    await db.commit()
+    db.commit()
     return {"ok": True, "status": "running"}
 
 
 @router.post("/{server_id}/stop")
-async def stop_mcp_server(server_id: str, db: AsyncSession = Depends(get_db)):
-    server = await db.get(MCPServer, server_id)
+def stop_mcp_server(server_id: str, db: Session = Depends(get_db)):
+    server = db.get(MCPServer, server_id)
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
     server.status = "stopped"
     server.pid = None
     server.updated_at = datetime.utcnow()
-    await db.commit()
+    db.commit()
     return {"ok": True, "status": "stopped"}
 
 
 @router.post("/{server_id}/health-check")
-async def health_check(server_id: str, db: AsyncSession = Depends(get_db)):
-    server = await db.get(MCPServer, server_id)
+def health_check(server_id: str, db: Session = Depends(get_db)):
+    server = db.get(MCPServer, server_id)
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
     server.last_health_check = datetime.utcnow()
     server.last_health_status = "ok"
     server.updated_at = datetime.utcnow()
-    await db.commit()
+    db.commit()
     return {"ok": True, "status": "ok"}

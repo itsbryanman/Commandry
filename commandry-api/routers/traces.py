@@ -1,15 +1,17 @@
 """Traces router — execution traces."""
 
+import json
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
+from budget_service import check_agent_budget_blocked
 from database import get_db
-from models import ExecutionTrace
+from models import Agent, ExecutionTrace
 
 router = APIRouter(prefix="/api/traces", tags=["traces"])
 
@@ -50,34 +52,67 @@ def _trace_dict(t: ExecutionTrace) -> dict:
 
 
 @router.get("")
-async def list_traces(agent_id: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+def list_traces(agent_id: Optional[str] = None, status: Optional[str] = None, db: Session = Depends(get_db)):
     q = select(ExecutionTrace).order_by(ExecutionTrace.started_at.desc()).limit(100)
     if agent_id:
         q = q.where(ExecutionTrace.agent_id == agent_id)
-    result = await db.execute(q)
+    if status:
+        q = q.where(ExecutionTrace.status == status)
+    result = db.execute(q)
     return [_trace_dict(t) for t in result.scalars().all()]
 
 
 @router.post("", status_code=201)
-async def create_trace(body: TraceCreate, db: AsyncSession = Depends(get_db)):
+def create_trace(body: TraceCreate, db: Session = Depends(get_db)):
+    # Check if agent is budget-blocked before allowing a new execution
+    agent = db.get(Agent, body.agent_id)
+    if agent and agent.status == "budget_blocked":
+        still_blocked, reason = check_agent_budget_blocked(db, body.agent_id)
+        if still_blocked:
+            # Record a budget_blocked trace for auditability
+            trace = ExecutionTrace(
+                id=body.id,
+                agent_id=body.agent_id,
+                triggered_by=body.triggered_by,
+                status="budget_blocked",
+                started_at=datetime.utcnow(),
+                ended_at=datetime.utcnow(),
+                turns=0,
+                input_tokens=0,
+                output_tokens=0,
+                cost_usd=0.0,
+                errors=json.dumps([{"code": "BUDGET_EXCEEDED", "message": reason}]),
+            )
+            db.add(trace)
+            db.commit()
+            db.refresh(trace)
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "BUDGET_EXCEEDED",
+                    "message": f"Agent '{body.agent_id}' is blocked: {reason}",
+                    "trace_id": trace.id,
+                },
+            )
+
     trace = ExecutionTrace(**body.model_dump())
     db.add(trace)
-    await db.commit()
-    await db.refresh(trace)
+    db.commit()
+    db.refresh(trace)
     return _trace_dict(trace)
 
 
 @router.get("/{trace_id}")
-async def get_trace(trace_id: str, db: AsyncSession = Depends(get_db)):
-    trace = await db.get(ExecutionTrace, trace_id)
+def get_trace(trace_id: str, db: Session = Depends(get_db)):
+    trace = db.get(ExecutionTrace, trace_id)
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
     return _trace_dict(trace)
 
 
 @router.put("/{trace_id}")
-async def update_trace(trace_id: str, body: TraceUpdate, db: AsyncSession = Depends(get_db)):
-    trace = await db.get(ExecutionTrace, trace_id)
+def update_trace(trace_id: str, body: TraceUpdate, db: Session = Depends(get_db)):
+    trace = db.get(ExecutionTrace, trace_id)
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
     for k, v in body.model_dump(exclude_unset=True).items():
@@ -85,6 +120,6 @@ async def update_trace(trace_id: str, body: TraceUpdate, db: AsyncSession = Depe
             setattr(trace, k, datetime.fromisoformat(v))
         else:
             setattr(trace, k, v)
-    await db.commit()
-    await db.refresh(trace)
+    db.commit()
+    db.refresh(trace)
     return _trace_dict(trace)

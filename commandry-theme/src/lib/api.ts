@@ -19,9 +19,8 @@ export const api = {
 
   // Dashboard
   dashboardStats: () =>
-    request<{ agents_running: number; agents_total: number; mcp_servers: number; today_cost_usd: number }>(
-      '/dashboard/stats'
-    ),
+    request<DashboardStats>('/dashboard/stats'),
+  dashboardAlerts: () => request<BudgetAlert[]>('/dashboard/alerts'),
 
   // Agents
   listAgents: () => request<Agent[]>('/agents'),
@@ -53,8 +52,10 @@ export const api = {
   // Prompts
   listPrompts: (agentId: string) => request<PromptVersion[]>(`/prompts/${agentId}`),
 
-  // Budget alerts
+  // Budget alerts & status
   listAlerts: () => request<BudgetAlert[]>('/budget/alerts'),
+  ackAlert: (id: number) => request<{ ok: boolean }>(`/budget/alerts/${id}/ack`, { method: 'POST' }),
+  agentBudgetStatus: (agentId: string) => request<BudgetStatus>(`/budget/status/${agentId}`),
 
   // Auth
   login: (username: string, password: string) =>
@@ -148,8 +149,33 @@ export interface BudgetAlert {
   agent_id: string;
   alert_type: string;
   budget_type: string;
+  period_key: string;
   limit_usd: number;
   actual_usd: number;
   triggered_at: string;
   acknowledged: boolean;
+}
+
+export interface BudgetStatus {
+  daily_spend_usd: number;
+  monthly_spend_usd: number;
+  daily_budget_usd: number | null;
+  monthly_budget_usd: number | null;
+  daily_pct: number;
+  monthly_pct: number;
+  daily_state: string;
+  monthly_state: string;
+  budget_alert_pct: number;
+  budget_auto_kill: boolean;
+  is_blocked: boolean;
+  recent_alerts: BudgetAlert[];
+}
+
+export interface DashboardStats {
+  agents_running: number;
+  agents_total: number;
+  agents_blocked: number;
+  mcp_servers: number;
+  today_cost_usd: number;
+  active_alerts: number;
 }

@@ -20,19 +20,19 @@ Built for solo developers and small teams running Claude Code, custom agents, or
 
 ## Features
 
-**Agent Management** — Register, configure, and control AI agents with per-agent model selection, budget limits, and workspace isolation. Start, stop, and restart agents as real subprocesses with PID tracking and log capture.
+**Agent Management** - Register, configure, and control AI agents with per-agent model selection, budget limits, and workspace isolation. Start, stop, and restart agents with status tracking.
 
-**MCP Server Registry** — Connect and monitor Model Context Protocol servers. Health checks, tool discovery, per-tool permission controls, and a visual tool browser across all connected servers.
+**MCP Server Registry** - Connect and monitor Model Context Protocol servers. Health checks, tool discovery, per-tool permission controls across all connected servers.
 
-**Token and Cost Tracking** — Real-time token usage ingestion with automatic cost computation from provider pricing tables. Daily and monthly budget enforcement with alerts and auto-kill on overspend. The cost dashboard answers "which agent is burning the most money" at a glance.
+**Token and Cost Tracking** - Real-time token usage ingestion with automatic cost computation from provider pricing tables. Per-agent and per-model cost breakdowns. The dashboard answers "which agent is burning the most money" at a glance.
 
-**Prompt Versioning** — Git-style version control for system prompts. Every edit creates a new version. Unified diff viewer between any two versions. One-click rollback. Tag versions as production, staging, or draft.
+**Budget Enforcement** - Daily and monthly budget limits per agent with three-tier threshold alerts (warning, critical, exceeded) and automatic agent blocking on overspend. Budget periods use UTC. Agents blocked by budget are automatically unblocked when the period rolls over. See [Budget Enforcement](#budget-enforcement) for details.
 
-**Execution Traces** — Structured traces of agent runs with step-by-step timelines. Expand any tool call to see its input, output, latency, and which MCP server handled it. Filter by agent, status, date range, or cost.
+**Prompt Versioning** - Version control for system prompts. Every edit creates a new version with tagging support.
 
-**System Administration** — File manager, process viewer, cron editor, service management, web terminal, and system status dashboard inherited from a proven sysadmin foundation. The host infrastructure and the agent layer managed from the same panel.
+**Execution Traces** - Structured traces of agent runs with token counts, cost, and status tracking. Budget-blocked executions are recorded as distinct `budget_blocked` traces with structured error codes for auditability.
 
-**Dashboard** — Four stat cards, agent status grid, weekly spend chart, MCP server health, and recent alerts. Everything important on one screen.
+**Dashboard** - Stat cards (agents running, today's cost, budget alerts, MCP servers), agent status grid, and recent budget alerts table. Blocked agents are visually distinct with orange borders and shield icons.
 
 ---
 
@@ -43,7 +43,7 @@ Built for solo developers and small teams running Claude Code, custom agents, or
                             |
                     +-------+-------+
                     |   FastAPI     |
-                    |   (Python)   |
+                    |   (Python)    |
                     +---+-----+----+
                         |     |
                /api/*   |     |   /*
@@ -57,14 +57,13 @@ Built for solo developers and small teams running Claude Code, custom agents, or
 | Layer | Stack |
 |-------|-------|
 | Frontend | React 19, Vite, Tailwind CSS, TypeScript |
-| Backend | FastAPI, SQLAlchemy, aiosqlite, Pydantic |
+| Backend | FastAPI, SQLAlchemy (synchronous), Pydantic |
 | Database | SQLite (embedded, zero config) |
 | Container | Ubuntu 24.04, single Dockerfile |
 
 ```
-commandry-api/        FastAPI backend — models, routers, schemas, seeders
-commandry-theme/      React SPA — pages, components, API client
-bin/                  Startup and CLI scripts
+commandry-api/        FastAPI backend - models, routers, services
+commandry-theme/      React SPA - pages, components, API client
 Dockerfile            Single-stage container build
 docker-compose.yml    One-command deployment
 ```
@@ -139,6 +138,43 @@ The Vite dev server proxies `/api/*` to `localhost:10000` automatically.
 
 ---
 
+## Budget Enforcement
+
+Commandry enforces daily and monthly spending limits per agent. Budget evaluation runs automatically after every token usage ingest.
+
+### Budget Periods (UTC)
+
+| Period | Window | Period Key Format |
+|--------|--------|-------------------|
+| Daily | Midnight-to-midnight UTC | `YYYY-MM-DD` |
+| Monthly | First-of-month midnight UTC | `YYYY-MM` |
+
+### Threshold Levels
+
+| Level | Trigger | Action |
+|-------|---------|--------|
+| **Warning** | Spend >= `budget_alert_pct`% of limit (default 80%) | Alert created |
+| **Critical** | Spend >= 95% of limit | Alert created |
+| **Exceeded** | Spend >= 100% of limit | Alert created + agent blocked (if `budget_auto_kill` is true) |
+
+### Behavior
+
+- **Alert deduplication**: Each (agent, alert_type, budget_type, period_key) combination fires at most once. A unique DB constraint prevents duplicates even under concurrent ingests.
+- **Auto-kill**: When an agent's budget is exceeded and `budget_auto_kill` is enabled, the agent's status is set to `budget_blocked`. Blocked agents cannot start, restart, create new traces, or ingest new tokens.
+- **Period rollover**: Blocked agents are automatically unblocked when checked in a new budget period. The check happens at agent start/restart and trace creation time â€” no background cron required.
+- **Precise math**: Threshold percentages are calculated using Python `Decimal` to avoid floating-point comparison issues.
+
+### Agent Budget Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `budget_daily_usd` | float | null | Daily spending limit in USD. Null = no daily limit. |
+| `budget_monthly_usd` | float | null | Monthly spending limit in USD. Null = no monthly limit. |
+| `budget_alert_pct` | float | 80 | Warning threshold percentage. |
+| `budget_auto_kill` | bool | true | Whether to block the agent on budget exceeded. |
+
+---
+
 ## API Reference
 
 All routes are prefixed with `/api`. Responses are JSON.
@@ -149,8 +185,10 @@ All routes are prefixed with `/api`. Responses are JSON.
 |--------|----------|-------------|
 | `GET` | `/api/health` | Health check |
 | `POST` | `/api/auth/login` | Authenticate (returns session cookie) |
-| `GET` | `/api/dashboard/stats` | Dashboard summary statistics |
-| `GET` | `/api/dashboard/alerts` | Recent budget alerts |
+| `POST` | `/api/auth/logout` | Log out |
+| `GET` | `/api/auth/me` | Current user info |
+| `GET` | `/api/dashboard/stats` | Dashboard summary (agents running/total/blocked, cost, alerts count) |
+| `GET` | `/api/dashboard/alerts` | Recent budget alerts (last 25) |
 
 ### Agents
 
@@ -158,21 +196,45 @@ All routes are prefixed with `/api`. Responses are JSON.
 |--------|----------|-------------|
 | `GET` | `/api/agents` | List all agents |
 | `POST` | `/api/agents` | Create agent |
-| `GET` | `/api/agents/{id}` | Agent detail |
+| `GET` | `/api/agents/{id}` | Agent detail (includes `budget_status` object) |
 | `PUT` | `/api/agents/{id}` | Update agent |
 | `DELETE` | `/api/agents/{id}` | Delete agent |
-| `POST` | `/api/agents/{id}/start` | Start agent process |
-| `POST` | `/api/agents/{id}/stop` | Stop agent process |
-| `GET` | `/api/agents/{id}/logs` | Tail agent process logs |
+| `POST` | `/api/agents/{id}/start` | Start agent (rejects if budget-blocked) |
+| `POST` | `/api/agents/{id}/stop` | Stop agent |
+| `POST` | `/api/agents/{id}/restart` | Restart agent (rejects if budget-blocked) |
 
 ### Tokens and Cost
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/tokens/ingest` | Record token usage |
-| `GET` | `/api/tokens/summary` | Cost totals (today, week, month) |
-| `GET` | `/api/tokens/by-agent/{id}` | Per-agent usage history |
-| `GET` | `/api/tokens/timeseries` | Cost over time for charts |
+| `POST` | `/api/tokens/ingest` | Record token usage (triggers budget evaluation) |
+| `GET` | `/api/tokens/summary` | Cost totals (today, month, all-time) |
+| `GET` | `/api/tokens/by-agent/{id}` | Per-agent usage history (last 100) |
+| `GET` | `/api/tokens/by-model` | Aggregate usage by model |
+
+### Budget
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/budget/alerts` | List budget alerts (last 50) |
+| `POST` | `/api/budget/alerts/{id}/ack` | Acknowledge an alert |
+| `GET` | `/api/budget/status/{agent_id}` | Full budget status for an agent |
+
+The budget status response includes:
+- `daily_spend_usd`, `monthly_spend_usd` - current period totals
+- `daily_budget_usd`, `monthly_budget_usd` - configured limits
+- `daily_pct`, `monthly_pct` - usage percentages
+- `daily_state`, `monthly_state` - `ok` / `warning` / `critical` / `exceeded`
+- `is_blocked` - whether agent is currently budget-blocked
+- `recent_alerts` - last 10 alerts for this agent
+
+### Pricing
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/pricing` | List provider pricing |
+| `POST` | `/api/pricing` | Create pricing entry |
+| `PUT` | `/api/pricing/{id}` | Update pricing entry |
 
 ### MCP Servers
 
@@ -181,6 +243,8 @@ All routes are prefixed with `/api`. Responses are JSON.
 | `GET` | `/api/mcp-servers` | List MCP servers |
 | `POST` | `/api/mcp-servers` | Register MCP server |
 | `GET` | `/api/mcp-servers/{id}` | Server detail |
+| `PUT` | `/api/mcp-servers/{id}` | Update server |
+| `DELETE` | `/api/mcp-servers/{id}` | Delete server |
 | `POST` | `/api/mcp-servers/{id}/start` | Start server |
 | `POST` | `/api/mcp-servers/{id}/stop` | Stop server |
 | `POST` | `/api/mcp-servers/{id}/health-check` | Trigger health check |
@@ -189,19 +253,30 @@ All routes are prefixed with `/api`. Responses are JSON.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/agents/{id}/prompts` | List prompt versions |
-| `POST` | `/api/agents/{id}/prompts` | Create new version |
-| `GET` | `/api/agents/{id}/prompts/diff/{v1}/{v2}` | Diff two versions |
-| `POST` | `/api/agents/{id}/prompts/{ver}/rollback` | Rollback to version |
+| `GET` | `/api/prompts/{agent_id}` | List prompt versions for agent |
+| `POST` | `/api/prompts/{agent_id}` | Create new prompt version |
+| `GET` | `/api/prompts/{agent_id}/{version}` | Get specific prompt version |
 
 ### Traces
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/traces` | List traces (filterable) |
-| `GET` | `/api/traces/{id}` | Trace detail with steps |
-| `POST` | `/api/traces` | Create trace |
-| `POST` | `/api/traces/{id}/steps` | Add trace step |
+| `GET` | `/api/traces` | List traces (filter by `agent_id`, `status`) |
+| `GET` | `/api/traces/{id}` | Trace detail |
+| `POST` | `/api/traces` | Create trace (rejects budget-blocked agents with 429) |
+| `PUT` | `/api/traces/{id}` | Update trace |
+
+Budget-blocked trace creation returns HTTP 429 with:
+```json
+{
+  "detail": {
+    "error": "BUDGET_EXCEEDED",
+    "message": "Agent 'my-agent' is blocked: daily budget exceeded ($12.50 / $10.00)",
+    "trace_id": "uuid-of-recorded-trace"
+  }
+}
+```
+A `budget_blocked` trace is still recorded for auditability, with structured errors in the `errors` field.
 
 ---
 
@@ -211,42 +286,56 @@ All routes are prefixed with `/api`. Responses are JSON.
 commandry-api/
   main.py              Application entry point, SPA serving, lifespan
   models.py            SQLAlchemy models (8 tables)
-  schemas.py           Pydantic request/response schemas
-  database.py          Async SQLite engine and session factory
-  seed.py              Provider pricing seed data
-  seed_demo.py         Demo data for first-run experience
+  database.py          Synchronous SQLite engine and session factory
+  budget_service.py    Budget evaluation, threshold alerts, enforcement
+  auth.py              Session-based authentication
   routers/
-    agents.py          Agent CRUD and lifecycle
-    tokens.py          Token ingestion, cost computation, timeseries
+    agents.py          Agent CRUD and lifecycle (with budget checks)
+    tokens.py          Token ingestion, cost computation, budget evaluation
     mcp_servers.py     MCP server registry and health
-    prompts.py         Prompt versioning and diffs
-    traces.py          Execution trace recording
-    dashboard.py       Aggregate stats and alerts
-    pricing.py         Provider pricing management
+    prompts.py         Prompt versioning
+    traces.py          Execution trace recording (with budget enforcement)
+    dashboard.py       Aggregate stats and budget alerts
+    auth_routes.py     Login, logout, whoami
+  tests/
+    conftest.py        Shared fixtures (in-memory SQLite, test client)
+    test_budget_service.py   Budget service unit tests (25 tests)
+    test_api_budget.py       API integration tests (21 tests)
 
 commandry-theme/
   src/
     pages/
-      Dashboard.tsx    Overview with stat cards, agent grid, spend chart
-      AgentList.tsx    Agent card grid with status badges
-      AgentDetail.tsx  Tabbed agent config (model, prompt, budget, logs)
-      AgentCreate.tsx  New agent wizard
-      CostDashboard.tsx  Token spend breakdown and trends
-      MCPServers.tsx   Server cards with health indicators
-      Prompts.tsx      Version history, editor, diff viewer
-      Traces.tsx       Filterable trace table with step timeline
+      Dashboard.tsx    Overview with stat cards, agent grid, budget alerts table
+      Agents.tsx       Agent card grid with status badges and blocked indicators
+      AgentDetail.tsx  Tabbed agent view (overview, config, prompt, budget)
     components/
-      Sidebar.tsx      Collapsible dark navigation
-      StatusBadge.tsx  Color-coded status pills
-      Loading.tsx      Spinner
-      EmptyState.tsx   Empty page placeholder with CTA
+      Sidebar.tsx      Navigation sidebar
+      StatusBadge.tsx  Color-coded status pills (includes budget_blocked, warning, critical, exceeded)
+      StatCard.tsx     Dashboard stat card component
     lib/
-      api.ts           Typed fetch client for all endpoints
-      types.ts         TypeScript interfaces
+      api.ts           Typed fetch client for all endpoints with full type definitions
 ```
 
 ---
 
+## Testing
+
+```bash
+cd commandry-api
+pip install -r requirements.txt
+pip install pytest httpx
+python -m pytest tests/ -v
+```
+
+46 tests covering:
+- Budget evaluation at all threshold levels (below, warning, critical, exceeded)
+- Duplicate alert prevention across repeated ingests
+- Daily and monthly budgets (individually and combined)
+- Agent blocking and period rollover unblocking
+- API-level enforcement (ingest rejection, start/restart rejection, trace blocking)
+- Dashboard stats accuracy (blocked count, active alerts count)
+- Budget status endpoint correctness
+- Concurrency safety (rapid ingests produce exactly one alert set)
 
 ---
 

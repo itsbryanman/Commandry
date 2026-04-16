@@ -88,12 +88,18 @@ class BudgetAlert(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     agent_id = Column(String, ForeignKey("agents.id"), nullable=True)
-    alert_type = Column(String, nullable=False)
-    budget_type = Column(String, nullable=False)
+    alert_type = Column(String, nullable=False)  # warning, critical, exceeded
+    budget_type = Column(String, nullable=False)  # daily, monthly
+    period_key = Column(String, nullable=False)  # "2026-04-14" for daily, "2026-04" for monthly
     limit_usd = Column(Float, nullable=True)
     actual_usd = Column(Float, nullable=True)
     triggered_at = Column(DateTime, default=datetime.utcnow)
     acknowledged = Column(Boolean, default=False)
+
+    __table_args__ = (
+        UniqueConstraint("agent_id", "alert_type", "budget_type", "period_key",
+                         name="uq_budget_alert_per_period"),
+    )
 
 
 class MCPServer(Base):

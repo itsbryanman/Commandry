@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Bot, Plus } from 'lucide-react';
+import { Bot, Plus, ShieldOff } from 'lucide-react';
 import StatusBadge from '../components/StatusBadge';
 import { api, type Agent } from '../lib/api';
 
@@ -39,7 +39,11 @@ export default function Agents() {
             >
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <Bot className="w-5 h-5" style={{ color: 'var(--primary)' }} />
+                  {a.status === 'budget_blocked' ? (
+                    <ShieldOff className="w-5 h-5" style={{ color: 'var(--danger)' }} />
+                  ) : (
+                    <Bot className="w-5 h-5" style={{ color: 'var(--primary)' }} />
+                  )}
                   <span className="font-semibold">{a.display_name}</span>
                 </div>
                 <StatusBadge status={a.status} />

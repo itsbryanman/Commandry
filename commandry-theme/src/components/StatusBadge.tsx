@@ -12,6 +12,10 @@ const COLORS: Record<string, { bg: string; text: string }> = {
   unknown: { bg: '#94a3b822', text: '#94a3b8' },
   completed: { bg: '#22c55e22', text: '#22c55e' },
   failed: { bg: '#ef444422', text: '#ef4444' },
+  budget_blocked: { bg: '#f9731622', text: '#f97316' },
+  warning: { bg: '#f59e0b22', text: '#f59e0b' },
+  critical: { bg: '#ef444422', text: '#ef4444' },
+  exceeded: { bg: '#dc262622', text: '#dc2626' },
 };
 
 export default function StatusBadge({ status }: Props) {
